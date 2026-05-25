@@ -84,20 +84,28 @@ export default function ChatMessage({ message }: ChatMessageProps) {
         borderBottomLeftRadius: isUser ? '18px' : '4px',
         maxWidth: isUser ? '65%' : '85%',
       }}>
-        {isLoading ? (
-          <div style={intStyles.loading}>
-            <span style={intStyles.dot}></span>
-            <span style={{ ...intStyles.dot, animationDelay: '0.16s' }}></span>
-            <span style={{ ...intStyles.dot, animationDelay: '0.32s' }}></span>
-          </div>
-        ) : isUser ? (
+        {isUser ? (
           <div style={intStyles.userText}>{message.content}</div>
         ) : (
           <>
-            <div className="markdown-body" style={{ color: theme.mdText }}>
-              <ReactMarkdown>{message.content}</ReactMarkdown>
-            </div>
-            {message.thoughts && <ToolResultBlock thoughts={message.thoughts} />}
+            {isLoading && !message.content && !message.thoughts?.length && (
+              <div style={intStyles.loading}>
+                <span style={intStyles.dot}></span>
+                <span style={{ ...intStyles.dot, animationDelay: '0.16s' }}></span>
+                <span style={{ ...intStyles.dot, animationDelay: '0.32s' }}></span>
+              </div>
+            )}
+            {message.content && (
+              <div className="markdown-body" style={{ color: theme.mdText }}>
+                <ReactMarkdown>{message.content}</ReactMarkdown>
+              </div>
+            )}
+            {isLoading && message.content && (
+              <div style={intStyles.streamingCursor}>|</div>
+            )}
+            {message.thoughts && message.thoughts.length > 0 && (
+              <ToolResultBlock thoughts={message.thoughts} />
+            )}
           </>
         )}
       </div>
@@ -120,4 +128,5 @@ const intStyles: Record<string, React.CSSProperties> = {
   stepPre: { fontSize: '12px', padding: '6px 10px', borderRadius: '6px', marginTop: '2px', whiteSpace: 'pre-wrap', maxHeight: '120px', overflowY: 'auto', fontFamily: 'SF Mono, Monaco, monospace', lineHeight: '1.4' },
   loading: { display: 'flex', gap: '6px', alignItems: 'center', padding: '4px 0' },
   dot: { width: '8px', height: '8px', borderRadius: '50%', background: '#0066cc', animation: 'bounce 1.2s infinite ease-in-out both', opacity: 0.5 },
+  streamingCursor: { display: 'inline', animation: 'blink 0.8s step-end infinite', color: '#0066cc', fontSize: '16px', fontWeight: 300 },
 };

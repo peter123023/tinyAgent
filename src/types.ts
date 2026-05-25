@@ -43,3 +43,13 @@ export interface AgentResponse {
   finalAnswer: string;
   thoughts: AgentThought[];
 }
+
+export interface StreamEvent {
+  type: 'thought' | 'action' | 'observation' | 'answer_chunk' | 'done' | 'error';
+  iteration?: number;
+  content?: string;
+  tool?: string;
+  actionInput?: Record<string, string>;
+  success?: boolean;
+  error?: string;
+}

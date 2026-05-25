@@ -38,46 +38,49 @@ app.get('/api/health', (_req, res) => {
 
 app.post('/api/chat', async (req, res) => {
   const { message } = req.body;
-  console.log(`[API] POST /api/chat 收到请求, message="${message?.substring(0, 50)}"`);
-
   if (!message || typeof message !== 'string') {
-    console.warn('[API] 参数错误: message 缺失');
     res.status(400).json({ error: 'message is required' });
     return;
   }
 
-  const controller = new AbortController();
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const ag = getAgent();
+  let done = false;
+
   const timeout = setTimeout(() => {
-    console.warn('[API] 请求超时 (120s)');
-    controller.abort();
+    if (!done) {
+      res.write(`event: error\ndata: {"error":"Request timeout"}\n\n`);
+      res.write(`event: done\ndata: {}\n\n`);
+      res.end();
+      done = true;
+    }
   }, 120000);
 
   try {
-    const ag = getAgent();
-    console.log('[API] 开始调用 agent.run()...');
-    const startTime = Date.now();
-
-    const result = await Promise.race([
-      ag.run(message),
-      new Promise<never>((_, reject) =>
-        controller.signal.addEventListener('abort', () =>
-          reject(new Error('请求超时，LLM 响应时间过长'))
-        )
-      ),
-    ]);
-
-    const elapsed = Date.now() - startTime;
-    console.log(`[API] agent.run() 完成, 耗时 ${elapsed}ms`);
-    console.log(`[API] 结果: success=${result.success}, answer_length=${result.finalAnswer.length}, thoughts_count=${result.thoughts.length}`);
-
-    clearTimeout(timeout);
-    res.json(result);
+    const stream = ag.runStream(message);
+    for await (const event of stream) {
+      if (done) break;
+      res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+      if (event.type === 'done' || event.type === 'error') {
+        done = true;
+        clearTimeout(timeout);
+      }
+    }
   } catch (err: any) {
-    clearTimeout(timeout);
-    const msg = err.message || String(err);
-    console.error('[API] 错误:', msg);
-    if (err.stack) console.error('[API] Stack:', err.stack.split('\n').slice(0, 4).join('\n'));
-    res.status(500).json({ error: msg });
+    if (!done) {
+      res.write(`event: error\ndata: {"error":"${err.message}"}\n\n`);
+      res.write(`event: done\ndata: {}\n\n`);
+    }
+  } finally {
+    if (!done) {
+      clearTimeout(timeout);
+      res.write(`event: done\ndata: {}\n\n`);
+    }
+    res.end();
   }
 });
 

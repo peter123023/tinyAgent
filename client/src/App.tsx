@@ -5,7 +5,7 @@ import ChatInput from './components/ChatInput';
 import WelcomeScreen from './components/WelcomeScreen';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { themes, ThemeName, ThemeColors } from './themes';
-import { sendMessage, AgentResponse } from './api';
+import { sendMessageStream, StreamEvent } from './api';
 
 const STORAGE_KEY = 'tiny-agent-conversations';
 const THEME_KEY = 'tiny-agent-theme';
@@ -149,30 +149,113 @@ export default function App() {
     });
   };
 
+  const streamingId = useRef<string | null>(null);
+  const streamingConvId = useRef<string | null>(null);
+
   const handleSend = async (text: string) => {
     if (!activeConv) return;
     const userMsg: Message = { id: uid(), role: 'user', content: text };
-    const loadingMsg: Message = { id: uid(), role: 'assistant', content: '思考中...', loading: true };
-    updateConversation(activeConv.id, conv => ({
+    const streamMsgId = uid();
+    streamingId.current = streamMsgId;
+    streamingConvId.current = activeConv.id;
+
+    const convId = activeConv.id;
+    updateConversation(convId, conv => ({
       ...conv,
       title: conv.title === WELCOME_TITLE ? text.substring(0, 30) + (text.length > 30 ? '...' : '') : conv.title,
-      messages: [...conv.messages, userMsg, loadingMsg],
+      messages: [...conv.messages, userMsg, { id: streamMsgId, role: 'assistant', content: '', loading: true, thoughts: [] }],
     }));
     setLoading(true);
+
+    const accumulatedThoughts: any[] = [];
+    let answerContent = '';
+
+    const updateStreamMsg = () => {
+      const sid = streamingId.current;
+      const scid = streamingConvId.current;
+      if (!sid || !scid) return;
+      setConversations(prev => prev.map(c => {
+        if (c.id !== scid) return c;
+        return {
+          ...c,
+          messages: c.messages.map(m =>
+            m.id === sid
+              ? { ...m, content: answerContent, thoughts: [...accumulatedThoughts], loading: true }
+              : m
+          ),
+        };
+      }));
+    };
+
     try {
-      const result = await sendMessage(text);
-      updateConversation(activeConv.id, conv => {
-        const withoutLoading = conv.messages.filter(m => !m.loading);
-        const finalMsg: Message = { id: uid(), role: 'assistant', content: result.finalAnswer, thoughts: result.thoughts };
-        return { ...conv, messages: [...withoutLoading, finalMsg] };
+      await sendMessageStream(text, (event: StreamEvent) => {
+        if (event.type === 'thought' || event.type === 'action' || event.type === 'observation') {
+          const lastThought = accumulatedThoughts[accumulatedThoughts.length - 1];
+          if (event.type === 'thought') {
+            if (lastThought && lastThought.action === undefined && !lastThought.observation) {
+              lastThought.thought = event.content || '';
+            } else {
+              accumulatedThoughts.push({ thought: event.content || '', action: undefined, actionInput: undefined, observation: undefined });
+            }
+          } else if (event.type === 'action') {
+            if (lastThought && lastThought.action === undefined) {
+              lastThought.action = event.tool;
+              lastThought.actionInput = event.actionInput;
+            } else {
+              accumulatedThoughts.push({ thought: '', action: event.tool, actionInput: event.actionInput, observation: undefined });
+            }
+          } else if (event.type === 'observation') {
+            if (lastThought && lastThought.observation === undefined) {
+              lastThought.observation = event.content || '';
+            } else {
+              accumulatedThoughts.push({ thought: '', action: undefined, actionInput: undefined, observation: event.content || '' });
+            }
+          }
+          updateStreamMsg();
+        } else if (event.type === 'answer_chunk') {
+          answerContent += event.content || '';
+          updateStreamMsg();
+        } else if (event.type === 'error') {
+          answerContent = `错误: ${event.error}`;
+          updateStreamMsg();
+        } else if (event.type === 'done') {
+          // Finalize
+          const sid = streamingId.current;
+          const scid = streamingConvId.current;
+          if (sid && scid) {
+            setConversations(prev => prev.map(c => {
+              if (c.id !== scid) return c;
+              return {
+                ...c,
+                messages: c.messages.map(m =>
+                  m.id === sid
+                    ? { id: uid(), role: 'assistant', content: answerContent, thoughts: [...accumulatedThoughts] }
+                    : m
+                ),
+              };
+            }));
+          }
+        }
       });
     } catch (err: any) {
-      updateConversation(activeConv.id, conv => {
-        const withoutLoading = conv.messages.filter(m => !m.loading);
-        const errMsg: Message = { id: uid(), role: 'assistant', content: `❌ 错误: ${err.message}` };
-        return { ...conv, messages: [...withoutLoading, errMsg] };
-      });
+      const sid = streamingId.current;
+      const scid = streamingConvId.current;
+      if (sid && scid) {
+        setConversations(prev => prev.map(c => {
+          if (c.id !== scid) return c;
+          return {
+            ...c,
+            messages: c.messages.map(m =>
+              m.id === sid
+                ? { id: uid(), role: 'assistant', content: `错误: ${err.message}`, thoughts: [] }
+                : m
+            ),
+          };
+        }));
+      }
     } finally {
+      streamingId.current = null;
+      streamingConvId.current = null;
       setLoading(false);
     }
   };
