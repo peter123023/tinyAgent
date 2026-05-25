@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+.env.local
+client/dist/
+client/node_modules/
+client/DESIGN.md
+*.log
+.DS_Store
+Thumbs.db
