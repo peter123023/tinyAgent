@@ -60,6 +60,7 @@ export class ReActAgent {
   private config: AgentConfig;
   private tools: Tool[];
   private client: OpenAI;
+  private recentActions: Array<{ key: string }> = [];
 
   constructor(config: Partial<AgentConfig>, tools: Tool[]) {
     this.config = {
@@ -68,6 +69,8 @@ export class ReActAgent {
       baseURL: config.baseURL || process.env.LLM_BASE_URL || 'https://api.openai.com/v1',
       systemPrompt: config.systemPrompt || '',
       maxIterations: config.maxIterations || 15,
+      duplicateThreshold: config.duplicateThreshold ?? 3,
+      maxMessageWindow: config.maxMessageWindow ?? 10,
     };
     this.tools = tools;
     this.client = new OpenAI({
@@ -76,6 +79,30 @@ export class ReActAgent {
       timeout: 60000,
       maxRetries: 2,
     });
+  }
+
+  private checkLoop(action: string, actionInput: Record<string, string>): boolean {
+    const key = `${action}:${JSON.stringify(actionInput)}`;
+    this.recentActions.push({ key });
+
+    const maxRecent = this.config.duplicateThreshold * 2;
+    if (this.recentActions.length > maxRecent) {
+      this.recentActions.shift();
+    }
+
+    const count = this.recentActions.filter(a => a.key === key).length;
+    return count >= this.config.duplicateThreshold;
+  }
+
+  private trimMessages(messages: Message[]): Message[] {
+    const maxWindow = this.config.maxMessageWindow;
+    if (maxWindow <= 0) return messages;
+    // Keep system prompt (index 0), user input (index 1), and last maxWindow rounds
+    // Each round = 2 messages: assistant response + observation
+    const maxMessages = 2 + maxWindow * 2;
+    if (messages.length <= maxMessages) return messages;
+
+    return [messages[0], messages[1], ...messages.slice(-maxWindow * 2)];
   }
 
   async run(userInput: string): Promise<AgentResponse> {
@@ -96,12 +123,13 @@ export class ReActAgent {
       `\n\nAvailable Tools:\n${toolDesc}`,
       this.config.systemPrompt ? `\n\nExtra Context:\n${this.config.systemPrompt}` : '',
     ].join('');
-    const messages: Message[] = [
+    let messages: Message[] = [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userInput },
     ];
 
     for (let iteration = 0; iteration < this.config.maxIterations; iteration++) {
+      messages = this.trimMessages(messages);
       const response = await this.callLLM(messages);
       const content = response.choices[0]?.message?.content?.trim() || '';
       messages.push({ role: 'assistant', content });
@@ -111,6 +139,11 @@ export class ReActAgent {
         return { success: false, finalAnswer: content, thoughts };
       }
       if (parsed.action && parsed.actionInput) {
+        if (this.checkLoop(parsed.action, parsed.actionInput)) {
+          const observation = `Error: Detected repeated action "${parsed.action}" with same inputs. Breaking loop.`;
+          thoughts.push({ thought: parsed.thought || '', action: parsed.action, actionInput: parsed.actionInput, observation });
+          return { success: false, finalAnswer: 'Agent entered a loop and was terminated.', thoughts };
+        }
         const tool = this.tools.find(t => t.name === parsed.action);
         if (!tool) {
           const observation = `Error: Unknown tool "${parsed.action}". Available tools: ${this.tools.map(t => t.name).join(', ')}`;
@@ -141,7 +174,7 @@ export class ReActAgent {
       this.config.systemPrompt ? `\n\nExtra Context:\n${this.config.systemPrompt}` : '',
     ].join('');
 
-    const messages: Message[] = [
+    let messages: Message[] = [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userInput },
     ];
@@ -149,6 +182,7 @@ export class ReActAgent {
     for (let iteration = 0; iteration < this.config.maxIterations; iteration++) {
       let llmContent = '';
       try {
+        messages = this.trimMessages(messages);
         const stream = await this.client.chat.completions.create({
           model: this.config.model,
           messages: messages as any,
@@ -179,6 +213,14 @@ export class ReActAgent {
       }
 
       if (parsed.action && parsed.actionInput) {
+        if (this.checkLoop(parsed.action, parsed.actionInput)) {
+          yield { type: 'thought', iteration, content: parsed.thought || '' };
+          yield { type: 'observation', iteration, content: `Detected repeated action "${parsed.action}" with same inputs. Breaking loop.` };
+          yield { type: 'error', error: 'Agent entered a loop and was terminated.' };
+          yield { type: 'done', success: false };
+          return;
+        }
+
         yield { type: 'thought', iteration, content: parsed.thought || '' };
         yield { type: 'action', iteration, tool: parsed.action, actionInput: parsed.actionInput };
 

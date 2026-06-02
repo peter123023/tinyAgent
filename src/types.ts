@@ -29,6 +29,8 @@ export interface AgentConfig {
   baseURL: string;
   systemPrompt: string;
   maxIterations: number;
+  duplicateThreshold: number;
+  maxMessageWindow: number;
 }
 
 export interface AgentThought {
